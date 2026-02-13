@@ -1,0 +1,43 @@
+name: Build books.json
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "books/**"
+      - ".github/workflows/build-books-json.yml"
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build data/books.json from books/
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p data
+          mapfile -t files < <(find books -maxdepth 1 -type f \( -iname "*.pdf" \) -printf "%f\n" | LC_ALL=C sort)
+          ts="$(date '+%Y-%m-%d %H:%M')"
+          printf '{\n  "generated_at": "%s",\n  "books": [\n' "$ts" > data/books.json
+          first=1
+          for f in "${files[@]}"; do
+            title="${f%.pdf}"
+            title="${title//_/ }"
+            esc_title="${title//\\/\\\\}"; esc_title="${esc_title//\"/\\\"}"
+            esc_file="books/${f//\\/\\\\}"; esc_file="${esc_file//\"/\\\"}"
+            if [ $first -eq 0 ]; then printf ',\n' >> data/books.json; fi
+            first=0
+            printf '    { "title": "%s", "file": "%s", "grade": "", "tags": [] }' "$esc_title" "$esc_file" >> data/books.json
+          done
+          printf '\n  ]\n}\n' >> data/books.json
+      - name: Commit & push if changed
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- data/books.json; then exit 0; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/books.json
+          git commit -m "chore: auto-update books.json"
+          git push

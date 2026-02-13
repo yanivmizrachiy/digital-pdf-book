@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>צפייה בספר</title>
+<style>
+:root{--bg:#0b0f19;--panel:#0f172a;--text:#e5e7eb;--muted:#9ca3af;--accent:#60a5fa;--shadow:0 18px 45px rgba(0,0,0,.35);--r:16px;--font:system-ui,-apple-system,"Segoe UI","Heebo","Assistant",Arial,sans-serif;}
+*{box-sizing:border-box}
+body{margin:0;font-family:var(--font);color:var(--text);
+  background:radial-gradient(1200px 600px at 70% 0%, rgba(96,165,250,.20), transparent 60%),
+             linear-gradient(180deg,#05070d 0%, var(--bg) 70%, #070b14 100%);
+  min-height:100vh;display:flex;flex-direction:column}
+header{padding:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;
+  background:rgba(0,0,0,.30);border-bottom:1px solid rgba(255,255,255,.10);
+  position:sticky;top:0;z-index:10;backdrop-filter:blur(8px)}
+.btn{border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.05);color:var(--text);
+  padding:10px 12px;border-radius:12px;cursor:pointer;text-decoration:none;display:inline-flex;gap:8px;align-items:center}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.spacer{flex:1}
+.title{font-size:14px;color:var(--muted);max-width:45vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.input{width:78px;border:1px solid rgba(255,255,255,.10);background:rgba(0,0,0,.28);color:var(--text);
+  padding:10px 10px;border-radius:12px;outline:none;text-align:center}
+#pageSlider{width:170px;accent-color:var(--accent)}
+.wrap{flex:1;padding:12px;display:flex;justify-content:center}
+.shell{width:min(1100px,100%);background:linear-gradient(180deg, rgba(255,255,255,.04), rgba(255,255,255,.02));
+  border:1px solid rgba(255,255,255,.08);border-radius:var(--r);box-shadow:var(--shadow);overflow:hidden}
+.stage{background:rgba(0,0,0,.25);display:flex;justify-content:center;align-items:center;padding:12px;min-height:calc(100vh - 140px)}
+canvas{max-width:100%;height:auto;border-radius:10px}
+.hint{padding:10px 12px;border-top:1px solid rgba(255,255,255,.08);color:var(--muted);font-size:12px;display:flex;gap:10px;flex-wrap:wrap;justify-content:space-between}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono",monospace}
+</style>
+</head>
+<body>
+<header>
+  <a class="btn" href="index.html">⬅ תוכן עניינים</a>
+  <button class="btn" id="prevBtn">◀ הקודם</button>
+  <button class="btn" id="nextBtn">הבא ▶</button>
+  <span class="title" id="bookTitle">—</span>
+  <div class="spacer"></div>
+  <button class="btn" id="zoomOut">➖</button>
+  <button class="btn" id="zoomIn">➕</button>
+  <input class="input" id="pageInput" type="number" min="1" value="1" title="קפיצה לעמוד"/>
+  <input id="pageSlider" type="range" min="1" max="1" value="1" title="גרור לדפדוף מהיר"/>
+  <span class="title" id="pageInfo">עמוד — / —</span>
+  <button class="btn" id="fsBtn">⛶ מסך מלא</button>
+</header>
+
+<div class="wrap">
+  <div class="shell">
+    <div class="stage">
+      <canvas id="pdfCanvas"></canvas>
+    </div>
+    <div class="hint">
+      <span>טיפ: פתיחה ישירה עם <code>?file=books/NAME.pdf</code></span>
+      <span id="status">טוען…</span>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<script>
+const $ = id => document.getElementById(id);
+
+const params = new URLSearchParams(location.search);
+const file = params.get("file") || "";
+const title = params.get("title") || "";
+$("bookTitle").textContent = title || file || "בחר ספר מתוכן העניינים";
+
+const storageKey = file ? ("pdf:lastPage:" + file) : "";
+const statusEl = $("status");
+const canvas = $("pdfCanvas");
+const ctx = canvas.getContext("2d", { alpha:false });
+
+let pdfDoc=null, pageNum=1, pageCount=0, scale=1.35, rendering=false, pending=null;
+
+function setStatus(s){ statusEl.textContent=s; }
+function clamp(n){ return Math.max(1, Math.min(pageCount, n)); }
+
+async function renderPage(num){
+  if(!pdfDoc) return;
+  rendering=true;
+  setStatus("מרנדר…");
+  const page = await pdfDoc.getPage(num);
+  const viewport = page.getViewport({ scale });
+  canvas.width = Math.floor(viewport.width);
+  canvas.height = Math.floor(viewport.height);
+  await page.render({ canvasContext: ctx, viewport }).promise;
+
+  $("pageInfo").textContent = `עמוד ${pageNum} / ${pageCount}`;
+  $("pageInput").value = pageNum;
+  $("pageSlider").max = pageCount;
+  $("pageSlider").value = pageNum;
+
+  $("prevBtn").disabled = pageNum<=1;
+  $("nextBtn").disabled = pageNum>=pageCount;
+
+  if(storageKey){ try{ localStorage.setItem(storageKey, String(pageNum)); }catch(e){} }
+
+  rendering=false;
+  setStatus("מוכן");
+  if(pending!==null){ const next=pending; pending=null; renderPage(next); }
+}
+
+function queueRender(num){
+  if(rendering){ pending=num; return; }
+  pageNum=num;
+  renderPage(num);
+}
+
+async function loadPdf(url){
+  if(!url){
+    setStatus("בחר ספר מתוכן העניינים");
+    $("prevBtn").disabled=true; $("nextBtn").disabled=true;
+    return;
+  }
+  try{
+    pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.worker.min.js";
+    setStatus("טוען PDF…");
+    const loadingTask = pdfjsLib.getDocument({ url, withCredentials:false });
+    pdfDoc = await loadingTask.promise;
+    pageCount = pdfDoc.numPages;
+
+    pageNum = 1;
+    if(storageKey){
+      const saved = parseInt(localStorage.getItem(storageKey)||"",10);
+      if(Number.isFinite(saved) && saved>=1) pageNum = saved;
+    }
+
+    $("pageInput").max = pageCount;
+    $("pageSlider").max = pageCount;
+    $("pageSlider").value = pageNum;
+
+    await renderPage(pageNum);
+  }catch(e){
+    console.error(e);
+    setStatus("שגיאה בטעינה. ודא שהקובץ קיים ושמו נכון.");
+  }
+}
+
+$("prevBtn").onclick = ()=> queueRender(clamp(pageNum-1));
+$("nextBtn").onclick = ()=> queueRender(clamp(pageNum+1));
+
+$("zoomIn").onclick = ()=>{ scale=Math.min(3.0, scale+0.15); queueRender(pageNum); };
+$("zoomOut").onclick = ()=>{ scale=Math.max(0.6, scale-0.15); queueRender(pageNum); };
+
+$("pageInput").addEventListener("change", ()=>{
+  const n=parseInt($("pageInput").value||"1",10);
+  if(Number.isFinite(n)) queueRender(clamp(n));
+});
+$("pageSlider").addEventListener("input", ()=>{
+  const n=parseInt($("pageSlider").value||"1",10);
+  if(Number.isFinite(n)) queueRender(clamp(n));
+});
+
+$("fsBtn").onclick = async ()=>{
+  const el=document.querySelector(".shell");
+  try{ document.fullscreenElement ? await document.exitFullscreen() : await el.requestFullscreen(); }catch(e){}
+};
+
+// swipe (mobile) — RTL: ימינה=קודם, שמאלה=הבא
+let touchX=null;
+const stage=document.querySelector(".stage");
+stage.addEventListener("touchstart",(e)=>{ if(e.touches&&e.touches.length) touchX=e.touches[0].clientX; },{passive:true});
+stage.addEventListener("touchend",(e)=>{
+  if(touchX===null) return;
+  const endX=(e.changedTouches&&e.changedTouches.length)?e.changedTouches[0].clientX:null;
+  if(endX===null){ touchX=null; return; }
+  const dx=endX-touchX; touchX=null;
+  if(Math.abs(dx)<40) return;
+  if(dx>0) queueRender(clamp(pageNum-1)); else queueRender(clamp(pageNum+1));
+},{passive:true});
+
+addEventListener("keydown",(e)=>{
+  if(e.key==="ArrowLeft") queueRender(clamp(pageNum-1));
+  if(e.key==="ArrowRight") queueRender(clamp(pageNum+1));
+  if(e.key==="+"||e.key==="="){ scale=Math.min(3.0, scale+0.15); queueRender(pageNum); }
+  if(e.key==="-" ){ scale=Math.max(0.6, scale-0.15); queueRender(pageNum); }
+});
+
+if("serviceWorker" in navigator){
+  addEventListener("load", ()=> navigator.serviceWorker.register("./sw.js").catch(()=>{}));
+}
+
+loadPdf(file);
+</script>
+</body>
+</html>
